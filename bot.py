@@ -170,10 +170,14 @@ def webhook():
     return webhook_handler()
 
 # Устанавливаем webhook при запуске
-@app.before_first_request
-def setup():
-    webhook_url = f"https://creobot.onrender.com/{TOKEN}"
-    bot.set_webhook(url=webhook_url)
+@app.route(f"/{TOKEN}", methods=["POST"])
+def webhook():
+    update = Update.de_json(request.get_json(force=True), bot)
+    dispatcher.process_update(update)
+    return "ok"
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=int(os.environ.get('PORT', 10000)))
+
 
 conv_handler = ConversationHandler(
     entry_points=[CommandHandler("start", start)],
