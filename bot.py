@@ -1,25 +1,34 @@
-# bot.py (обновлённый)
 import logging
 import os
 import json
-import re
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Updater, CommandHandler, CallbackQueryHandler, MessageHandler, Filters, CallbackContext, ConversationHandler
-import gspread
-from oauth2client.service_account import ServiceAccountCredentials
 from datetime import datetime
 
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import (
+    Updater, CommandHandler, CallbackQueryHandler,
+    MessageHandler, Filters, CallbackContext,
+    ConversationHandler
+)
+
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
+
+# Логирование
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Подключение к Google Sheets
 scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
-creds = ServiceAccountCredentials.from_json_keyfile_dict(json.loads(os.environ['GOOGLE_CREDS_JSON']), scope)
+creds = ServiceAccountCredentials.from_json_keyfile_dict(
+    json.loads(os.environ['GOOGLE_CREDS_JSON']), scope
+)
 client = gspread.authorize(creds)
 
+# Константы
 SPREADSHEET_ID = '1NIiG7JZPabqAYz9GB45iP8KVbfkF_EhiutnzRDeKEGI'
 ADMIN_ID = 547448838
 
-(START, AWAIT_NAME, SELECT_PLATFORM, AWAIT_LINK, AWAIT_VIEWS, CONFIRM) = range(6)
+(START, AWAIT_NAME, SELECT_PLATFORM, AWAIT_LINK, AWAIT_VIEWS) = range(5)
 user_state = {}
 
 PLATFORM_KPI = {
@@ -29,13 +38,14 @@ PLATFORM_KPI = {
 }
 
 
+# Команды и обработчики
 def start(update: Update, context: CallbackContext):
     user_id = str(update.effective_user.id)
     sheet = client.open_by_key(SPREADSHEET_ID).worksheet("Users")
     users = sheet.col_values(1)
 
     if user_id not in users:
-        update.message.reply_text("Добро пожаловать! Введите ваше имя и фамилию для регистрации:")
+        update.message.reply_text("Добро пожаловать! Введите ваше имя и фамилию:")
         return AWAIT_NAME
     else:
         update.message.reply_text("Выберите действие:", reply_markup=main_menu())
@@ -68,7 +78,7 @@ def button_handler(update: Update, context: CallbackContext):
         query.edit_message_text("Выберите платформу:", reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("YouTube Shorts", callback_data='plat_YT')],
             [InlineKeyboardButton("TikTok", callback_data='plat_TT')],
-            [InlineKeyboardButton("Instagram", callback_data='plat_IG')]
+            [InlineKeyboardButton("Instagram", callback_data='plat_IG')],
         ]))
         return SELECT_PLATFORM
 
@@ -105,7 +115,7 @@ def handle_link(update: Update, context: CallbackContext):
         return START
 
     user_state[update.effective_user.id]['link'] = link
-    update.message.reply_text("Введите точное количество просмотров:")
+    update.message.reply_text("Введите количество просмотров:")
     return AWAIT_VIEWS
 
 
@@ -122,12 +132,12 @@ def handle_views(update: Update, context: CallbackContext):
     link = data.get('link')
 
     if not platform or not link:
-        update.message.reply_text("Произошла ошибка. Попробуйте заново.")
+        update.message.reply_text("Ошибка. Начните заново.")
         return START
 
     kpi = PLATFORM_KPI[platform]
     if views < 15000:
-        update.message.reply_text("У вас недостаточно просмотров для KPI.")
+        update.message.reply_text("Недостаточно просмотров для KPI.")
         return START
 
     units = views // kpi['step']
@@ -135,19 +145,19 @@ def handle_views(update: Update, context: CallbackContext):
     user_state[user_id]['views'] = views
     user_state[user_id]['payment'] = payment
 
-    # отправляем админу на проверку
+    # Сообщение админу
     context.bot.send_message(
         ADMIN_ID,
         f"Заявка от @{update.effective_user.username or user_id}\nПлатформа: {platform}\nСсылка: {link}\nПросмотры: {views}\nKPI: {'ДА' if units else 'НЕТ'}\nНачисление: {payment} BYN"
     )
 
-    update.message.reply_text(f"Заявка отправлена на проверку. Возможная выплата: {payment} BYN")
-    
-    # сохраняем в таблицу
+    update.message.reply_text(f"Заявка отправлена. Возможная выплата: {payment} BYN")
+
+    # Запись в таблицу
     sheet = client.open_by_key(SPREADSHEET_ID).worksheet("Videos")
     sheet.append_row([str(user_id), platform, link, views, 'YES' if units else 'NO', payment, str(datetime.now().date())])
 
-    # обновляем баланс
+    # Обновление баланса
     if units:
         sheet = client.open_by_key(SPREADSHEET_ID).worksheet("Users")
         users = sheet.get_all_records()
@@ -161,13 +171,16 @@ def handle_views(update: Update, context: CallbackContext):
 
 
 def error_handler(update: Update, context: CallbackContext):
-    logger.error(msg="Exception while handling update:", exc_info=context.error)
+    logger.error(msg="Ошибка:", exc_info=context.error)
     if update and update.effective_message:
         update.effective_message.reply_text("Произошла ошибка. Попробуйте позже.")
 
 
 def main():
-    updater = Updater("7600973416:AAF4p1J96D2At_9fQHKTPNZ3CS4vc_mb39s")
+    TOKEN = os.getenv("BOT_TOKEN")
+    APP_URL = os.getenv("RENDER_EXTERNAL_URL")  # Render автоматически задаёт эту переменную
+
+    updater = Updater(TOKEN, use_context=True)
     dp = updater.dispatcher
 
     conv_handler = ConversationHandler(
@@ -185,8 +198,16 @@ def main():
     dp.add_handler(CallbackQueryHandler(button_handler))
     dp.add_error_handler(error_handler)
 
-    updater.start_polling()
+    # Webhook (для Render)
+    updater.start_webhook(
+        listen="0.0.0.0",
+        port=int(os.environ.get("PORT", 8443)),
+        url_path=TOKEN,
+        webhook_url=f"{APP_URL}{TOKEN}"
+    )
+
     updater.idle()
+
 
 if __name__ == '__main__':
     main()
