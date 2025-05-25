@@ -178,8 +178,6 @@ def error_handler(update: Update, context: CallbackContext):
 
 def main():
     TOKEN = os.getenv("BOT_TOKEN")
-    APP_URL = os.getenv("RENDER_EXTERNAL_URL")  # Render автоматически задаёт эту переменную
-
     updater = Updater(TOKEN, use_context=True)
     dp = updater.dispatcher
 
@@ -198,15 +196,16 @@ def main():
     dp.add_handler(CallbackQueryHandler(button_handler))
     dp.add_error_handler(error_handler)
 
-    # Webhook (для Render)
+    # Запуск через webhook (не polling)
     updater.start_webhook(
         listen="0.0.0.0",
-        port=int(os.environ.get("PORT", 8443)),
+        port=int(os.environ.get("PORT", 5000)),
         url_path=TOKEN,
-        webhook_url=f"{APP_URL}{TOKEN}"
+        webhook_url=f"https://creobot.onrender.com/{TOKEN}"
     )
 
     updater.idle()
+
 
 
 if __name__ == '__main__':
