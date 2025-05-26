@@ -1,30 +1,26 @@
 import os
 import json
 import logging
-from flask import Flask, request
+from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
-    Application, CommandHandler, CallbackQueryHandler, MessageHandler,
-    filters, ConversationHandler, ContextTypes
+    Application, CommandHandler, MessageHandler, CallbackQueryHandler,
+    ConversationHandler, ContextTypes, filters
 )
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
-from datetime import datetime
 
 # === Настройки ===
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
 TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = 547448838
 SPREADSHEET_ID = '1NIiG7JZPabqAYz9GB45iP8KVbfkF_EhiutnzRDeKEGI'
 
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
 creds = ServiceAccountCredentials.from_json_keyfile_dict(json.loads(os.environ['GOOGLE_CREDS_JSON']), scope)
 client = gspread.authorize(creds)
-
-(START, AWAIT_NAME, SELECT_PLATFORM, AWAIT_LINK, AWAIT_VIEWS) = range(5)
-user_state = {}
 
 PLATFORM_KPI = {
     'YouTube Shorts': {'step': 7500, 'rate': 1},
@@ -32,44 +28,38 @@ PLATFORM_KPI = {
     'Instagram': {'step': 5000, 'rate': 1},
 }
 
-# === Flask + Webhook ===
-flask_app = Flask(__name__)
-application = Application.builder().token(TOKEN).build()
+(START, AWAIT_NAME, SELECT_PLATFORM, AWAIT_LINK, AWAIT_VIEWS) = range(5)
+user_state = {}
 
-@flask_app.route(f"/{TOKEN}", methods=["POST"])
-async def webhook():
-    data = request.get_json(force=True)
-    update = Update.de_json(data, application.bot)
-    await application.process_update(update)
-    return "ok"
+def main_menu_admin():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("Проверить заявки", callback_data='check_requests')],
+        [InlineKeyboardButton("Баланс пользователей", callback_data='all_balances')],
+        [InlineKeyboardButton("Общий долг", callback_data='total_debt')]
+    ])
 
-@flask_app.route("/")
-def index():
-    return "Bot is running."
-
-# === Меню ===
-def main_menu():
+def main_menu_user():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("Добавить видео", callback_data='add_video')],
         [InlineKeyboardButton("Баланс", callback_data='check_balance')]
     ])
 
-# === /start ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     sheet = client.open_by_key(SPREADSHEET_ID).worksheet("Users")
     users = sheet.col_values(1)
 
     if int(user_id) == ADMIN_ID:
-        await update.message.reply_text("\u2705 Вы админ!")
-    else:
-        await update.message.reply_text("\ud83d\udc64 Вы обычный пользователь.")
+        if user_id not in users:
+            sheet.append_row([user_id, 'ADMIN', 0])
+        await update.message.reply_text("\u2705 Вы админ!", reply_markup=main_menu_admin())
+        return START
 
     if user_id not in users:
         await update.message.reply_text("Введите имя и фамилию для регистрации:")
         return AWAIT_NAME
     else:
-        await update.message.reply_text("Выберите действие:", reply_markup=main_menu())
+        await update.message.reply_text("Выберите действие:", reply_markup=main_menu_user())
         return START
 
 async def handle_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -77,14 +67,36 @@ async def handle_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     full_name = update.message.text.strip()
     sheet = client.open_by_key(SPREADSHEET_ID).worksheet("Users")
     sheet.append_row([user_id, full_name, 0])
-    await update.message.reply_text(f"Спасибо, {full_name}! Вы зарегистрированы.", reply_markup=main_menu())
+    await update.message.reply_text(f"Спасибо, {full_name}! Вы зарегистрированы.", reply_markup=main_menu_user())
     return START
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    user_id = query.from_user.id
+    user_id = str(query.from_user.id)
 
+    if user_id == str(ADMIN_ID):
+        if query.data == 'check_requests':
+            sheet = client.open_by_key(SPREADSHEET_ID).worksheet("Videos")
+            data = sheet.get_all_records()[-5:]  # последние 5 заявок
+            text = "\n\n".join([f"{row['Платформа']} - {row['Ссылка']} - {row['Просмотры']} - {row['Сумма']} BYN" for row in data])
+            await query.edit_message_text(f"Последние заявки:\n{text}", reply_markup=main_menu_admin())
+
+        elif query.data == 'all_balances':
+            users_sheet = client.open_by_key(SPREADSHEET_ID).worksheet("Users")
+            data = users_sheet.get_all_records()
+            text = "\n".join([f"{row['FullName']} ({row['UserID']}): {row['Balance']} BYN" for row in data])
+            await query.edit_message_text(f"Балансы:\n{text}", reply_markup=main_menu_admin())
+
+        elif query.data == 'total_debt':
+            users_sheet = client.open_by_key(SPREADSHEET_ID).worksheet("Users")
+            balances = users_sheet.col_values(3)[1:]  # без заголовка
+            total = sum(float(b) for b in balances)
+            await query.edit_message_text(f"Общий долг по выплатам: {total} BYN", reply_markup=main_menu_admin())
+
+        return START
+
+    # user buttons
     if query.data == 'add_video':
         user_state[user_id] = {}
         await query.edit_message_text("Выберите платформу:", reply_markup=InlineKeyboardMarkup([
@@ -97,93 +109,36 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif query.data == 'check_balance':
         sheet = client.open_by_key(SPREADSHEET_ID).worksheet("Users")
         records = sheet.get_all_records()
-        record = next((r for r in records if str(r['UserID']) == str(user_id)), None)
+        record = next((r for r in records if str(r['UserID']) == user_id), None)
         balance = record['Balance'] if record else 0
-        await query.edit_message_text(f"Ваш баланс: {balance} BYN", reply_markup=main_menu())
+        await query.edit_message_text(f"Ваш баланс: {balance} BYN", reply_markup=main_menu_user())
         return START
 
-async def select_platform(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    user_id = query.from_user.id
+# Остальные обработчики можно скопировать как раньше
 
-    platform_map = {'plat_YT': 'YouTube Shorts', 'plat_TT': 'TikTok', 'plat_IG': 'Instagram'}
-    platform = platform_map.get(query.data)
-    user_state[user_id]['platform'] = platform
-    await query.edit_message_text("Отправьте ссылку на видео:")
-    return AWAIT_LINK
+async def main():
+    application = Application.builder().token(TOKEN).build()
 
-async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    link = update.message.text.strip()
-    user_id = str(update.effective_user.id)
-    sheet = client.open_by_key(SPREADSHEET_ID).worksheet("Videos")
-    links = sheet.col_values(3)
+    conv_handler = ConversationHandler(
+        entry_points=[CommandHandler("start", start)],
+        states={
+            AWAIT_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_name)],
+            SELECT_PLATFORM: [CallbackQueryHandler(..., pattern='^plat_')],
+            AWAIT_LINK: [MessageHandler(filters.TEXT & ~filters.COMMAND, ...)],
+            AWAIT_VIEWS: [MessageHandler(filters.TEXT & ~filters.COMMAND, ...)],
+        },
+        fallbacks=[]
+    )
 
-    if link in links:
-        await update.message.reply_text("Вы уже добавляли эту ссылку.")
-        return START
+    application.add_handler(conv_handler)
+    application.add_handler(CallbackQueryHandler(button_handler))
 
-    user_state[update.effective_user.id]['link'] = link
-    await update.message.reply_text("Введите количество просмотров:")
-    return AWAIT_VIEWS
+    await application.run_webhook(
+        listen="0.0.0.0",
+        port=int(os.environ.get("PORT", 10000)),
+        webhook_url=f"https://creobot.onrender.com/{TOKEN}"
+    )
 
-async def handle_views(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    try:
-        views = int(update.message.text.strip())
-    except ValueError:
-        await update.message.reply_text("Введите число.")
-        return AWAIT_VIEWS
-
-    platform = user_state[user_id].get('platform')
-    link = user_state[user_id].get('link')
-
-    if not platform or not link:
-        await update.message.reply_text("Ошибка. Начните заново.")
-        return START
-
-    kpi = PLATFORM_KPI[platform]
-    units = views // kpi['step']
-    payment = units * kpi['rate']
-
-    await context.bot.send_message(ADMIN_ID, f"Заявка от @{update.effective_user.username}:\n"
-                                             f"Платформа: {platform}\nСсылка: {link}\nПросмотры: {views}\n"
-                                             f"KPI: {'ДА' if units else 'НЕТ'}\nСумма: {payment} BYN")
-
-    await update.message.reply_text(f"Заявка отправлена. Выплата: {payment} BYN")
-
-    sheet = client.open_by_key(SPREADSHEET_ID).worksheet("Videos")
-    sheet.append_row([str(user_id), platform, link, views, 'YES' if units else 'NO', payment, str(datetime.now().date())])
-
-    if units:
-        users_sheet = client.open_by_key(SPREADSHEET_ID).worksheet("Users")
-        users = users_sheet.get_all_records()
-        for i, u in enumerate(users, start=2):
-            if str(u['UserID']) == str(user_id):
-                new_balance = float(u['Balance']) + payment
-                users_sheet.update_cell(i, 3, new_balance)
-                break
-
-    return START
-
-# === Обработчики ===
-conv_handler = ConversationHandler(
-    entry_points=[CommandHandler("start", start)],
-    states={
-        AWAIT_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_name)],
-        SELECT_PLATFORM: [CallbackQueryHandler(select_platform, pattern='^plat_')],
-        AWAIT_LINK: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_link)],
-        AWAIT_VIEWS: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_views)],
-    },
-    fallbacks=[]
-)
-
-application.add_handler(conv_handler)
-application.add_handler(CallbackQueryHandler(button_handler))
-
-if __name__ == "__main__":
+if __name__ == '__main__':
     import asyncio
-
-loop = asyncio.get_event_loop()
-loop.create_task(application.initialize())
-flask_app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
+    asyncio.run(main())
