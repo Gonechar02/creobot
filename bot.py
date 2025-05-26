@@ -5,16 +5,14 @@ import gspread
 from datetime import datetime
 from oauth2client.service_account import ServiceAccountCredentials
 from flask import Flask, request
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Dispatcher, CommandHandler, MessageHandler, Filters, CallbackQueryHandler, ConversationHandler
-from telegram.ext import CallbackContext
-from telegram import Bot
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, Bot
+from telegram.ext import Dispatcher, CommandHandler, MessageHandler, Filters, CallbackQueryHandler, ConversationHandler, CallbackContext
 
-# Настройка логирования
+# Логирование
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Настройки Google Sheets
+# Google Sheets авторизация
 scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
 creds = ServiceAccountCredentials.from_json_keyfile_dict(json.loads(os.environ['GOOGLE_CREDS_JSON']), scope)
 client = gspread.authorize(creds)
@@ -25,6 +23,7 @@ ADMIN_ID = 547448838
 # Состояния
 (START, AWAIT_NAME, SELECT_PLATFORM, AWAIT_LINK, AWAIT_VIEWS) = range(5)
 user_state = {}
+
 PLATFORM_KPI = {
     'YouTube Shorts': {'step': 7500, 'rate': 1},
     'TikTok': {'step': 7500, 'rate': 1},
@@ -37,21 +36,23 @@ bot = Bot(token=TOKEN)
 app = Flask(__name__)
 dispatcher = Dispatcher(bot, None, workers=4, use_context=True)
 
+# Главное меню
 def main_menu():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("Добавить видео", callback_data='add_video')],
         [InlineKeyboardButton("Баланс", callback_data='check_balance')]
     ])
 
+# Команда /start
 def start(update: Update, context: CallbackContext):
     user_id = str(update.effective_user.id)
     sheet = client.open_by_key(SPREADSHEET_ID).worksheet("Users")
     users = sheet.col_values(1)
 
     if user_id != str(ADMIN_ID):
-        logging.info(f"Обычный пользователь: {user_id}")
+        logger.info(f"Обычный пользователь: {user_id}")
     else:
-        logging.info("Запущено админом")
+        logger.info("Запущено админом")
 
     if user_id not in users:
         update.message.reply_text("Введите имя и фамилию для регистрации:")
@@ -60,6 +61,7 @@ def start(update: Update, context: CallbackContext):
         update.message.reply_text("Выберите действие:", reply_markup=main_menu())
         return START
 
+# Обработка имени
 def handle_name(update: Update, context: CallbackContext):
     user_id = str(update.effective_user.id)
     full_name = update.message.text.strip()
@@ -68,6 +70,7 @@ def handle_name(update: Update, context: CallbackContext):
     update.message.reply_text(f"Спасибо, {full_name}! Вы зарегистрированы.", reply_markup=main_menu())
     return START
 
+# Обработка кнопок
 def button_handler(update: Update, context: CallbackContext):
     query = update.callback_query
     user_id = query.from_user.id
@@ -90,6 +93,7 @@ def button_handler(update: Update, context: CallbackContext):
         query.edit_message_text(f"Ваш баланс: {balance} BYN", reply_markup=main_menu())
         return START
 
+# Выбор платформы
 def select_platform(update: Update, context: CallbackContext):
     query = update.callback_query
     user_id = query.from_user.id
@@ -101,6 +105,7 @@ def select_platform(update: Update, context: CallbackContext):
     query.edit_message_text("Отправьте ссылку на видео:")
     return AWAIT_LINK
 
+# Ссылка на видео
 def handle_link(update: Update, context: CallbackContext):
     link = update.message.text.strip()
     user_id = str(update.effective_user.id)
@@ -115,6 +120,7 @@ def handle_link(update: Update, context: CallbackContext):
     update.message.reply_text("Введите количество просмотров:")
     return AWAIT_VIEWS
 
+# Просмотры
 def handle_views(update: Update, context: CallbackContext):
     user_id = update.effective_user.id
     try:
@@ -140,10 +146,11 @@ def handle_views(update: Update, context: CallbackContext):
 
     update.message.reply_text(f"Заявка отправлена. Выплата: {payment} BYN")
 
-    # Сохраняем
+    # Сохраняем в таблицу
     sheet = client.open_by_key(SPREADSHEET_ID).worksheet("Videos")
     sheet.append_row([str(user_id), platform, link, views, 'YES' if units else 'NO', payment, str(datetime.now().date())])
 
+    # Обновляем баланс
     if units:
         users_sheet = client.open_by_key(SPREADSHEET_ID).worksheet("Users")
         users = users_sheet.get_all_records()
@@ -155,30 +162,19 @@ def handle_views(update: Update, context: CallbackContext):
 
     return START
 
-def webhook_handler():
-    if request.method == "POST":
-        update = Update.de_json(request.get_json(force=True), bot)
-        dispatcher.process_update(update)
-    return 'OK'
-
-@app.route('/')
-def index():
-    return "Bot is running."
-
-@app.route(f"/{TOKEN}", methods=["POST"])
-def webhook():
-    return webhook_handler()
-
-# Устанавливаем webhook при запуске
+# Webhook для Telegram
 @app.route(f"/{TOKEN}", methods=["POST"])
 def webhook():
     update = Update.de_json(request.get_json(force=True), bot)
     dispatcher.process_update(update)
     return "ok"
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get('PORT', 10000)))
 
+# Проверка
+@app.route('/')
+def index():
+    return "Bot is running."
 
+# Обработчики
 conv_handler = ConversationHandler(
     entry_points=[CommandHandler("start", start)],
     states={
@@ -193,5 +189,6 @@ conv_handler = ConversationHandler(
 dispatcher.add_handler(conv_handler)
 dispatcher.add_handler(CallbackQueryHandler(button_handler))
 
+# Запуск
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get('PORT', 10000)))
