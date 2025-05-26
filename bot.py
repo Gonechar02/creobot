@@ -182,4 +182,6 @@ application.add_handler(conv_handler)
 application.add_handler(CallbackQueryHandler(button_handler))
 
 if __name__ == "__main__":
+    import asyncio
+    asyncio.run(application.initialize())
     flask_app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
