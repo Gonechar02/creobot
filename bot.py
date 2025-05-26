@@ -1,7 +1,8 @@
 import os
 import json
 import logging
-from datetime import datetime
+import threading
+from flask import Flask, request
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, CallbackQueryHandler,
@@ -18,6 +19,7 @@ SPREADSHEET_ID = '1NIiG7JZPabqAYz9GB45iP8KVbfkF_EhiutnzRDeKEGI'
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Google Sheets auth
 scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
 creds = ServiceAccountCredentials.from_json_keyfile_dict(json.loads(os.environ['GOOGLE_CREDS_JSON']), scope)
 client = gspread.authorize(creds)
@@ -31,6 +33,10 @@ PLATFORM_KPI = {
 (START, AWAIT_NAME, SELECT_PLATFORM, AWAIT_LINK, AWAIT_VIEWS) = range(5)
 user_state = {}
 
+# === Flask App ===
+flask_app = Flask(__name__)
+
+# === Интерфейсы ===
 def main_menu_admin():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("Проверить заявки", callback_data='check_requests')],
@@ -44,6 +50,7 @@ def main_menu_user():
         [InlineKeyboardButton("Баланс", callback_data='check_balance')]
     ])
 
+# === Хендлеры ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     sheet = client.open_by_key(SPREADSHEET_ID).worksheet("Users")
@@ -78,7 +85,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user_id == str(ADMIN_ID):
         if query.data == 'check_requests':
             sheet = client.open_by_key(SPREADSHEET_ID).worksheet("Videos")
-            data = sheet.get_all_records()[-5:]  # последние 5 заявок
+            data = sheet.get_all_records()[-5:]
             text = "\n\n".join([f"{row['Платформа']} - {row['Ссылка']} - {row['Просмотры']} - {row['Сумма']} BYN" for row in data])
             await query.edit_message_text(f"Последние заявки:\n{text}", reply_markup=main_menu_admin())
 
@@ -90,13 +97,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         elif query.data == 'total_debt':
             users_sheet = client.open_by_key(SPREADSHEET_ID).worksheet("Users")
-            balances = users_sheet.col_values(3)[1:]  # без заголовка
+            balances = users_sheet.col_values(3)[1:]
             total = sum(float(b) for b in balances)
             await query.edit_message_text(f"Общий долг по выплатам: {total} BYN", reply_markup=main_menu_admin())
 
         return START
 
-    # user buttons
     if query.data == 'add_video':
         user_state[user_id] = {}
         await query.edit_message_text("Выберите платформу:", reply_markup=InlineKeyboardMarkup([
@@ -114,31 +120,36 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(f"Ваш баланс: {balance} BYN", reply_markup=main_menu_user())
         return START
 
-# Остальные обработчики можно скопировать как раньше
+# === Flask Webhook Endpoint ===
+@flask_app.route(f"/{TOKEN}", methods=["POST"])
+async def webhook():
+    data = request.get_json(force=True)
+    update = Update.de_json(data, application.bot)
+    await application.process_update(update)
+    return "ok"
 
-async def main():
-    application = Application.builder().token(TOKEN).build()
+@flask_app.route("/")
+def index():
+    return "Bot is running."
 
+# === Запуск ===
+application = Application.builder().token(TOKEN).build()
+
+async def setup_bot():
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
         states={
             AWAIT_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_name)],
-            SELECT_PLATFORM: [CallbackQueryHandler(..., pattern='^plat_')],
-            AWAIT_LINK: [MessageHandler(filters.TEXT & ~filters.COMMAND, ...)],
-            AWAIT_VIEWS: [MessageHandler(filters.TEXT & ~filters.COMMAND, ...)],
+            # другие состояния пока заглушки
         },
         fallbacks=[]
     )
-
     application.add_handler(conv_handler)
     application.add_handler(CallbackQueryHandler(button_handler))
+    await application.initialize()
+    await application.start()
 
-    await application.run_webhook(
-        listen="0.0.0.0",
-        port=int(os.environ.get("PORT", 10000)),
-        webhook_url=f"https://creobot.onrender.com/{TOKEN}"
-    )
-
-if __name__ == '__main__':
+if __name__ == "__main__":
+    threading.Thread(target=lambda: flask_app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))).start()
     import asyncio
-    asyncio.run(main())
+    asyncio.run(setup_bot())
