@@ -17,14 +17,12 @@ logger = logging.getLogger(__name__)
 
 TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = 547448838
-
 SPREADSHEET_ID = '1NIiG7JZPabqAYz9GB45iP8KVbfkF_EhiutnzRDeKEGI'
 
 scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
 creds = ServiceAccountCredentials.from_json_keyfile_dict(json.loads(os.environ['GOOGLE_CREDS_JSON']), scope)
 client = gspread.authorize(creds)
 
-# === Состояния ===
 (START, AWAIT_NAME, SELECT_PLATFORM, AWAIT_LINK, AWAIT_VIEWS) = range(5)
 user_state = {}
 
@@ -63,9 +61,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     users = sheet.col_values(1)
 
     if int(user_id) == ADMIN_ID:
-        await update.message.reply_text("✅ Вы админ!")
+        await update.message.reply_text("\u2705 Вы админ!")
     else:
-        await update.message.reply_text("👤 Вы обычный пользователь.")
+        await update.message.reply_text("\ud83d\udc64 Вы обычный пользователь.")
 
     if user_id not in users:
         await update.message.reply_text("Введите имя и фамилию для регистрации:")
@@ -182,3 +180,6 @@ conv_handler = ConversationHandler(
 
 application.add_handler(conv_handler)
 application.add_handler(CallbackQueryHandler(button_handler))
+
+if __name__ == "__main__":
+    flask_app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
