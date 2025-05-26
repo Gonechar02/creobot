@@ -49,7 +49,7 @@ def start(update: Update, context: CallbackContext):
     sheet = client.open_by_key(SPREADSHEET_ID).worksheet("Users")
     users = sheet.col_values(1)
 
-    if user_id != str(ADMIN_ID):
+    if int(user_id) != ADMIN_ID:
         logger.info(f"Обычный пользователь: {user_id}")
     else:
         logger.info("Запущено админом")
