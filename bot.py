@@ -1,146 +1,149 @@
 import os
 import json
 import logging
+import threading
+from flask import Flask, request
+
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
-    Application, CommandHandler, MessageHandler, CallbackQueryHandler,
-    ConversationHandler, ContextTypes, filters
+    Application, CommandHandler, CallbackQueryHandler,
+    ConversationHandler, MessageHandler, ContextTypes, filters
 )
+
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
-# === Настройки ===
+# === НАСТРОЙКИ ===
 TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = 547448838
-SPREADSHEET_ID = '1NIiG7JZPabqAYz9GB45iP8KVbfkF_EhiutnzRDeKEGI'
+SPREADSHEET_ID = "1NIiG7JZPabqAYz9GB45iP8KVbfkF_EhiutnzRDeKEGI"
 
+# === ЛОГИ ===
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# === GOOGLE SHEETS ===
 scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
 creds = ServiceAccountCredentials.from_json_keyfile_dict(json.loads(os.environ['GOOGLE_CREDS_JSON']), scope)
 client = gspread.authorize(creds)
+users_sheet = client.open_by_key(SPREADSHEET_ID).worksheet("Users")
+videos_sheet = client.open_by_key(SPREADSHEET_ID).worksheet("Videos")
 
-PLATFORM_KPI = {
-    'YouTube Shorts': {'step': 7500, 'rate': 1},
-    'TikTok': {'step': 7500, 'rate': 1},
-    'Instagram': {'step': 5000, 'rate': 1},
-}
-
+# === СОСТОЯНИЯ ===
 (START, AWAIT_NAME) = range(2)
 
-def main_menu_admin():
+# === КНОПКИ ===
+def admin_menu():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("✅ Проверить заявки", callback_data='check_requests')],
-        [InlineKeyboardButton("📅 Баланс пользователей", callback_data='all_balances')],
-        [InlineKeyboardButton("💸 Общий долг", callback_data='total_debt')]
+        [InlineKeyboardButton("✉️ Проверить заявки", callback_data='check_requests')],
+        [InlineKeyboardButton("💳 Балансы", callback_data='all_balances')],
+        [InlineKeyboardButton("💸 Общий долг", callback_data='total_debt')],
     ])
 
-def main_menu_user():
+def user_menu():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("➕ Добавить видео", callback_data='add_video')],
-        [InlineKeyboardButton("💳 Баланс", callback_data='check_balance')]
+        [InlineKeyboardButton("💳 Баланс", callback_data='check_balance')],
     ])
 
+# === ОБРАБОТЧИК /start ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
-    sheet = client.open_by_key(SPREADSHEET_ID).worksheet("Users")
-    users = sheet.col_values(1)
+    users = users_sheet.col_values(1)
 
-    if int(user_id) == ADMIN_ID:
+    if user_id == str(ADMIN_ID):
         if user_id not in users:
-            sheet.append_row([user_id, 'ADMIN', 0])
-        await update.message.reply_text("\u2705 Вы админ!", reply_markup=main_menu_admin())
+            users_sheet.append_row([user_id, 'ADMIN', 0])
+        await update.message.reply_text("✅ Вы админ!", reply_markup=admin_menu())
         return START
 
     if user_id not in users:
-        await update.message.reply_text("Введите имя и фамилию для регистрации:")
+        await update.message.reply_text("Введите имя и фамилию:")
         return AWAIT_NAME
-    else:
-        await update.message.reply_text("Выберите действие:", reply_markup=main_menu_user())
-        return START
 
-async def handle_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = str(update.effective_user.id)
-    full_name = update.message.text.strip()
-    sheet = client.open_by_key(SPREADSHEET_ID).worksheet("Users")
-    sheet.append_row([user_id, full_name, 0])
-    await update.message.reply_text(f"Спасибо, {full_name}! Вы зарегистрированы.", reply_markup=main_menu_user())
+    await update.message.reply_text("Выберите действие:", reply_markup=user_menu())
     return START
 
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# === РЕГИСТРАЦИЯ ИМЕНИ ===
+async def handle_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = str(update.effective_user.id)
+    name = update.message.text.strip()
+    users_sheet.append_row([user_id, name, 0])
+    await update.message.reply_text(f"✅ Спасибо, {name}!", reply_markup=user_menu())
+    return START
+
+# === ОБРАБОТЧИК КНОПОК ===
+async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     user_id = str(query.from_user.id)
 
     if user_id == str(ADMIN_ID):
         if query.data == 'check_requests':
-            sheet = client.open_by_key(SPREADSHEET_ID).worksheet("Videos")
-            data = sheet.get_all_records()
-            if not data:
-                await query.edit_message_text("❌ Заявок нет.", reply_markup=main_menu_admin())
+            records = videos_sheet.get_all_records()
+            if not records:
+                await query.edit_message_text("📅 Заявок нет.", reply_markup=admin_menu())
             else:
-                text = "\n\n".join([f"{row['Платформа']} - {row['Ссылка']} - {row['Просмотры']} - {row['Сумма']} BYN" for row in data[-5:]])
-                await query.edit_message_text(f"Последние заявки:\n{text}", reply_markup=main_menu_admin())
+                latest = records[-5:]
+                text = "\n\n".join([f"{r['Платформа']} | {r['Ссылка']} | {r['Просмотры']} | {r['Сумма']} BYN" for r in latest])
+                await query.edit_message_text(f"Последние заявки:\n{text}", reply_markup=admin_menu())
 
         elif query.data == 'all_balances':
-            users_sheet = client.open_by_key(SPREADSHEET_ID).worksheet("Users")
             data = users_sheet.get_all_records()
             if not data:
-                await query.edit_message_text("❌ Пользователей нет.", reply_markup=main_menu_admin())
+                await query.edit_message_text("🧑 Пользователей нет.", reply_markup=admin_menu())
             else:
-                text = "\n".join([f"{row['FullName']} ({row['UserID']}): {row['Balance']} BYN" for row in data])
-                await query.edit_message_text(f"Балансы:\n{text}", reply_markup=main_menu_admin())
+                balances = "\n".join([f"{r['FullName']} — {r['Balance']} BYN" for r in data])
+                await query.edit_message_text(f"Балансы:\n{balances}", reply_markup=admin_menu())
 
         elif query.data == 'total_debt':
-            users_sheet = client.open_by_key(SPREADSHEET_ID).worksheet("Users")
-            balances = users_sheet.col_values(3)[1:]
-            if not balances:
-                await query.edit_message_text("❌ Долгов нет.", reply_markup=main_menu_admin())
+            values = users_sheet.col_values(3)[1:]
+            if not values:
+                await query.edit_message_text("💸 Долгов нет.", reply_markup=admin_menu())
             else:
-                total = sum(float(b) for b in balances)
-                await query.edit_message_text(f"💸 Общий долг по выплатам: {total} BYN", reply_markup=main_menu_admin())
-
+                total = sum(float(v or 0) for v in values)
+                await query.edit_message_text(f"💸 Общий долг: {total} BYN", reply_markup=admin_menu())
         return START
 
-    if query.data == 'add_video':
-        await query.edit_message_text("📅 Добавление видео пока недоступно.", reply_markup=main_menu_user())
-        return START
-
-    elif query.data == 'check_balance':
-        sheet = client.open_by_key(SPREADSHEET_ID).worksheet("Users")
-        records = sheet.get_all_records()
-        record = next((r for r in records if str(r['UserID']) == user_id), None)
-        if not record:
-            await query.edit_message_text("Пользователь не найден.", reply_markup=main_menu_user())
+    if query.data == 'check_balance':
+        users = users_sheet.get_all_records()
+        user = next((u for u in users if str(u['UserID']) == user_id), None)
+        if user:
+            await query.edit_message_text(f"💳 Ваш баланс: {user['Balance']} BYN", reply_markup=user_menu())
         else:
-            balance = record['Balance']
-            await query.edit_message_text(f"💳 Ваш баланс: {balance} BYN", reply_markup=main_menu_user())
+            await query.edit_message_text("❌ Вы не зарегистрированы.")
         return START
 
-async def main():
-    application = Application.builder().token(TOKEN).build()
+# === FLASK и ВЕБХУК ===
+flask_app = Flask(__name__)
+application = Application.builder().token(TOKEN).build()
 
-    conv_handler = ConversationHandler(
+@flask_app.route('/')
+def root():
+    return 'Bot is alive.'
+
+@flask_app.route(f'/{TOKEN}', methods=['POST'])
+async def webhook():
+    update = Update.de_json(request.get_json(force=True), application.bot)
+    await application.process_update(update)
+    return 'ok'
+
+def flask_thread():
+    flask_app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 10000)))
+
+# === ЗАПУСК ===
+async def run():
+    conv = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
-        states={
-            AWAIT_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_name)],
-        },
+        states={AWAIT_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_name)]},
         fallbacks=[]
     )
-
-    application.add_handler(conv_handler)
-    application.add_handler(CallbackQueryHandler(button_handler))
+    application.add_handler(conv)
+    application.add_handler(CallbackQueryHandler(handle_buttons))
 
     await application.initialize()
     await application.start()
-    await application.updater.start_webhook(
-        listen="0.0.0.0",
-        port=int(os.environ.get("PORT", 10000)),
-        webhook_url=f"https://creobot.onrender.com/{TOKEN}"
-    )
-    await application.updater.idle()
+    threading.Thread(target=flask_thread).start()
 
 if __name__ == '__main__':
     import asyncio
-    asyncio.run(main())
+    asyncio.run(run())
